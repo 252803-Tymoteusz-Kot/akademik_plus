@@ -1,0 +1,31 @@
+flowchart LR
+    %% =========================================================================
+    %%  Akademik+ - DFD poziomu kontekstowego (poziom 0)
+    %%  Notacja Yourdona (zgodnie z wykladem dr Tomasza Ordysinskiego)
+    %%
+    %%  Diagram kontekstowy przedstawia caly system jako pojedynczy proces (0),
+    %%  ktorego granice okreslaja przeplywy danych do/od terminatorow.
+    %%  Na tym poziomie nie wystepuja magazyny danych.
+    %% =========================================================================
+
+    Term_Student[Student]
+    Term_Admin[Administrator]
+
+    Proc_System(((0. System<br/>Akademik+)))
+
+    %% Przeplywy od studenta
+    Term_Student -- "dane logowania" --> Proc_System
+    Term_Student -- "formularz rejestracji" --> Proc_System
+    Term_Student -- "zgloszenie usterki" --> Proc_System
+    Term_Student -- "wiadomosc czatu" --> Proc_System
+    Proc_System -- "harmonogram oplat" --> Term_Student
+    Proc_System -- "status zgloszenia" --> Term_Student
+    Proc_System -- "odpowiedz administratora" --> Term_Student
+
+    %% Przeplywy od administratora
+    Term_Admin -- "decyzja o przydziale pokoju" --> Proc_System
+    Term_Admin -- "definicja oplaty miesiecznej" --> Proc_System
+    Term_Admin -- "odpowiedz na zgloszenie" --> Proc_System
+    Proc_System -- "rejestr studentow" --> Term_Admin
+    Proc_System -- "raport finansowy" --> Term_Admin
+    Proc_System -- "lista usterek" --> Term_Admin
