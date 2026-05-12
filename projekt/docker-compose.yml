@@ -1,0 +1,129 @@
+# ============================================================================
+#  Akademik+ — kompozycja Docker (mikroserwisy)
+#
+#  Usługi:
+#    frontend    – React/Vite serwowane przez kontener
+#    api         – Node.js Express + Socket.IO  (czyta/pisze do MSSQL i Mongo)
+#    sql-server  – Microsoft SQL Server 2022 (relacyjne dane biznesowe)
+#    sql-init    – jednorazowy kontener który tworzy bazę AkademikDB i seed
+#    mongo-db    – MongoDB (kolekcje rozmów / zgłoszeń)
+#
+#  Komenda startu:
+#    docker compose up --build
+# ============================================================================
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - dorm-net
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - SQL_HOST=sql-server
+      - SQL_PORT=1433
+      - SQL_USER=sa
+      - SQL_PASSWORD=SuperSzK0lnaHaslo123!
+      - SQL_DB=AkademikDB
+      - MONGO_URL=mongodb://mongo-db:27017
+      - MONGO_DB=akademik
+    networks:
+      - dorm-net
+    depends_on:
+      sql-init:
+        condition: service_completed_successfully
+      mongo-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # ---- MongoDB --------------------------------------------------------------
+  # Bez auth, żeby mongo-init.js z /docker-entrypoint-initdb.d/ uruchomił się
+  # automatycznie przy pierwszym starcie i utworzył kolekcje + seed.
+  mongo-db:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=akademik
+    volumes:
+      - mongo-data:/data/db
+      - ./database/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - dorm-net
+
+  # ---- SQL Server -----------------------------------------------------------
+  sql-server:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=SuperSzK0lnaHaslo123!
+    volumes:
+      - sql-data:/var/opt/mssql
+    # Healthcheck musi wskazywać 'master' — AkademikDB jeszcze nie istnieje
+    # przy pierwszym starcie kontenera.
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa",
+             "-P", "SuperSzK0lnaHaslo123!", "-C", "-d", "master", "-Q", "SELECT 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - dorm-net
+
+  # ---- Inicjalizator MSSQL --------------------------------------------------
+  # Obraz mssql nie obsługuje /docker-entrypoint-initdb.d/, więc tworzymy bazę
+  # AkademikDB i wszystkie tabele sami przy pierwszym starcie. Skrypt jest
+  # idempotentny — przy kolejnych restartach i tak nadpisuje schemę i seed
+  # zgodnie z zawartością init.sql (wygodne na czas developmentu).
+  sql-init:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      sql-server:
+        condition: service_healthy
+    volumes:
+      - ./database/init.sql:/init.sql:ro
+    networks:
+      - dorm-net
+    entrypoint:
+      - /bin/bash
+      - -c
+      - /opt/mssql-tools/bin/sqlcmd -S sql-server -U sa -P 'SuperSzK0lnaHaslo123!' -d master -i /init.sql && echo '[sql-init] init.sql executed successfully'
+    restart: "no"
+
+volumes:
+  mongo-data:
+  sql-data:
+
+networks:
+  dorm-net:
+    driver: bridge

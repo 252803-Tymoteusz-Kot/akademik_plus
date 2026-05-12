@@ -1,0 +1,699 @@
+{
+  "openapi": "3.0.4",
+  "info": {
+    "title": "Akademik+ API",
+    "description": "Pełne API systemu zarządzania akademikiem. Obsługuje uwierzytelnianie, ewidencję studentów i pokoi, miesięczne opłaty, zgłoszenia usterek oraz czat w czasie rzeczywistym między administracją a studentami. Endpointy odpowiadają plikowi src/api/server.js. Aktualizacje danych są dodatkowo rozsyłane przez Socket.IO (lista zdarzeń w README.md, sekcja 'Eventy Socket.IO').",
+    "version": "1.1.0",
+    "contact": {
+      "name": "Akademik+ — projekt akademicki"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4000/api",
+      "description": "Bezpośrednio do kontenera api"
+    },
+    {
+      "url": "http://localhost:3000/api",
+      "description": "Przez reverse proxy frontendu (nginx)"
+    }
+  ],
+  "tags": [
+    { "name": "Health", "description": "Diagnostyka i status połączeń" },
+    { "name": "Auth", "description": "Logowanie, sesja, rejestracja, zmiana hasła" },
+    { "name": "State", "description": "Pełen snapshot danych domeny" },
+    { "name": "Rooms", "description": "Pokoje w akademiku (MSSQL)" },
+    { "name": "Students", "description": "Ewidencja studentów i przydziały do pokoi (MSSQL)" },
+    { "name": "Payments", "description": "Miesięczne opłaty (MSSQL)" },
+    { "name": "Issues", "description": "Zgłoszenia usterek (MongoDB)" },
+    { "name": "Chat", "description": "Wiadomości czatu admin ↔ student (MongoDB)" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "session_id",
+        "description": "Ciasteczko sesji ustawiane przez POST /api/login. HttpOnly, sameSite=lax."
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "example": "s1" },
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "role": { "type": "string", "enum": ["student", "admin"] },
+          "studentId": { "type": "string", "nullable": true, "description": "Numer indeksu (tylko dla studentów)" }
+        }
+      },
+      "Room": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "number": { "type": "string", "example": "101" },
+          "floor": { "type": "integer" },
+          "capacity": { "type": "integer" },
+          "occupied": { "type": "integer" },
+          "standard": { "type": "string", "enum": ["basic", "standard", "premium"] },
+          "pricePerMonth": { "type": "number" },
+          "equipment": { "type": "array", "items": { "type": "string" } },
+          "status": { "type": "string", "enum": ["available", "full", "maintenance"] },
+          "soleUse": { "type": "boolean" }
+        }
+      },
+      "Student": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "studentId": { "type": "string", "description": "Numer indeksu (np. STU001)" },
+          "phoneNumber": { "type": "string" },
+          "roomId": { "type": "string", "nullable": true },
+          "bedNumber": { "type": "integer", "nullable": true },
+          "checkInDate": { "type": "string", "format": "date", "nullable": true },
+          "checkOutDate": { "type": "string", "format": "date", "nullable": true }
+        }
+      },
+      "Payment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "studentId": { "type": "string" },
+          "amount": { "type": "number" },
+          "dueDate": { "type": "string", "format": "date" },
+          "paidDate": { "type": "string", "format": "date", "nullable": true },
+          "status": { "type": "string", "enum": ["paid", "pending", "overdue"] },
+          "month": { "type": "string", "example": "Styczeń" },
+          "year": { "type": "integer", "example": 2026 }
+        }
+      },
+      "ResidenceHistory": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "studentId": { "type": "string" },
+          "roomId": { "type": "string" },
+          "checkInDate": { "type": "string", "format": "date" },
+          "checkOutDate": { "type": "string", "format": "date", "nullable": true }
+        }
+      },
+      "Issue": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "studentId": { "type": "string" },
+          "roomId": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "category": { "type": "string", "enum": ["plumbing", "electrical", "furniture", "heating", "other"] },
+          "status": { "type": "string", "enum": ["open", "in-progress", "resolved", "closed"] },
+          "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "resolvedAt": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "IssueMessage": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "issueId": { "type": "string" },
+          "senderId": { "type": "string" },
+          "senderName": { "type": "string" },
+          "senderRole": { "type": "string", "enum": ["student", "admin"] },
+          "message": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Conversation": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "example": "conv_s1" },
+          "studentId": { "type": "string" },
+          "studentName": { "type": "string" },
+          "lastMessage": { "type": "string" },
+          "lastMessageTime": { "type": "string", "format": "date-time" },
+          "unreadCount": { "type": "integer" }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "conversationId": { "type": "string" },
+          "senderId": { "type": "string" },
+          "senderName": { "type": "string" },
+          "senderRole": { "type": "string", "enum": ["student", "admin"] },
+          "message": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "read": { "type": "boolean" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Healthcheck",
+        "description": "Status API oraz połączeń z bazami danych. Endpoint odpowiada 200 OK natychmiast po starcie kontenera (zanim podłączą się bazy), aby Docker healthcheck nie zabił procesu.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "Healthy" },
+                    "service": { "type": "string", "example": "akademik-plus-api" },
+                    "sql": { "type": "boolean", "description": "Czy połączenie z MSSQL jest aktywne" },
+                    "mongo": { "type": "boolean", "description": "Czy połączenie z MongoDB jest aktywne" },
+                    "timestamp": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Logowanie",
+        "description": "Weryfikuje email i hasło. W razie sukcesu ustawia ciasteczko HttpOnly 'session_id' (UUIDv4, 24h ważności).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "format": "email" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Zalogowano",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "user": { "$ref": "#/components/schemas/User" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Nieprawidłowe dane logowania", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Wylogowanie",
+        "description": "Usuwa sesję po stronie serwera i czyści ciasteczko 'session_id'.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Stan zalogowanego użytkownika",
+        "description": "Zwraca dane użytkownika powiązanego z ciasteczkiem sesji. Używane przez frontend przy pierwszym załadowaniu aplikacji do odzyskania kontekstu.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": {
+            "description": "Zalogowany",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "authenticated": { "type": "boolean", "example": true },
+                    "user": { "$ref": "#/components/schemas/User" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Niezalogowany" }
+        }
+      }
+    },
+    "/change-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Zmiana hasła zalogowanego użytkownika",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["currentPassword", "newPassword"],
+                "properties": {
+                  "currentPassword": { "type": "string" },
+                  "newPassword": { "type": "string", "minLength": 6 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Hasło zmienione" },
+          "400": { "description": "Walidacja (puste pole lub za krótkie hasło)" },
+          "401": { "description": "Niezalogowany lub nieprawidłowe obecne hasło" }
+        }
+      }
+    },
+    "/register": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Rejestracja nowego studenta",
+        "description": "Endpoint publiczny. Tworzy rekord w tabeli Users (rola 'student') ORAZ powiązany rekord w Students w jednej transakcji. Rozsyła event Socket.IO 'students:changed'.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "email", "studentId", "password"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string", "format": "email" },
+                  "studentId": { "type": "string", "description": "Numer indeksu, np. STU042" },
+                  "phoneNumber": { "type": "string" },
+                  "password": { "type": "string", "minLength": 6 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Konto utworzone" },
+          "400": { "description": "Brak wymaganych pól" },
+          "409": { "description": "Użytkownik z tym emailem już istnieje" }
+        }
+      }
+    },
+    "/state": {
+      "get": {
+        "tags": ["State"],
+        "summary": "Snapshot całego stanu domeny",
+        "description": "Zwraca jednorazowo wszystkie kolekcje danych (pokoje, studenci, opłaty, zgłoszenia, historia mieszkania, wiadomości, konwersacje). Używane przez frontend przy starcie aplikacji oraz dostępne jako ten sam payload przez Socket.IO event 'state:request' → 'state:snapshot'.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rooms": { "type": "array", "items": { "$ref": "#/components/schemas/Room" } },
+                    "students": { "type": "array", "items": { "$ref": "#/components/schemas/Student" } },
+                    "payments": { "type": "array", "items": { "$ref": "#/components/schemas/Payment" } },
+                    "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } },
+                    "residenceHistory": { "type": "array", "items": { "$ref": "#/components/schemas/ResidenceHistory" } },
+                    "chatMessages": { "type": "array", "items": { "$ref": "#/components/schemas/ChatMessage" } },
+                    "conversations": { "type": "array", "items": { "$ref": "#/components/schemas/Conversation" } },
+                    "issueMessages": { "type": "array", "items": { "$ref": "#/components/schemas/IssueMessage" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rooms": {
+      "post": {
+        "tags": ["Rooms"],
+        "summary": "Dodaj pokój",
+        "description": "Tworzy nowy rekord w tabeli Rooms. Rozsyła event 'rooms:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Room" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pokój utworzony",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Room" } } }
+          }
+        }
+      }
+    },
+    "/rooms/{id}": {
+      "patch": {
+        "tags": ["Rooms"],
+        "summary": "Aktualizuj pokój",
+        "description": "Częściowa aktualizacja — frontend wysyła tylko zmienione pola, backend merguje z bieżącym stanem rekordu.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Room" } }
+          }
+        },
+        "responses": {
+          "200": { "description": "Pokój zaktualizowany", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Room" } } } },
+          "404": { "description": "Nie znaleziono pokoju" }
+        }
+      }
+    },
+    "/students": {
+      "post": {
+        "tags": ["Students"],
+        "summary": "Dodaj studenta",
+        "description": "Tworzy rekord w tabeli Students. Jeśli nie istnieje powiązany User o podanym emailu, tworzy go automatycznie z domyślnym hasłem 'student' (cała operacja w transakcji). Rozsyła 'students:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Student" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Student dodany",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Student" } } }
+          }
+        }
+      }
+    },
+    "/students/{id}": {
+      "patch": {
+        "tags": ["Students"],
+        "summary": "Aktualizuj studenta",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Student" } } }
+        },
+        "responses": {
+          "200": { "description": "Student zaktualizowany", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Student" } } } },
+          "404": { "description": "Nie znaleziono studenta" }
+        }
+      }
+    },
+    "/students/{id}/assign-room": {
+      "post": {
+        "tags": ["Students"],
+        "summary": "Przypisz studenta do pokoju",
+        "description": "Operacja transakcyjna: aktualizuje Students (RoomId, BedNumber, CheckInDate), inkrementuje Rooms.Occupied i ustawia Status='full' jeśli osiągnięto Capacity, dopisuje wpis do ResidenceHistory. Rozsyła 'students:changed' i 'rooms:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["roomId", "bedNumber"],
+                "properties": {
+                  "roomId": { "type": "string" },
+                  "bedNumber": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Przypisano" },
+          "404": { "description": "Nieprawidłowy student lub pokój" }
+        }
+      }
+    },
+    "/students/{id}/remove-room": {
+      "post": {
+        "tags": ["Students"],
+        "summary": "Wymelduj studenta z pokoju",
+        "description": "Operacja transakcyjna: zeruje Students.RoomId / BedNumber, ustawia CheckOutDate, dekrementuje Rooms.Occupied, zamyka otwarty wpis w ResidenceHistory (CheckOutDate). Rozsyła 'students:changed' i 'rooms:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Wymeldowano" },
+          "404": { "description": "Nie znaleziono studenta" }
+        }
+      }
+    },
+    "/payments": {
+      "post": {
+        "tags": ["Payments"],
+        "summary": "Dodaj pojedynczą płatność",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Payment" } } }
+        },
+        "responses": {
+          "200": { "description": "Płatność dodana", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Payment" } } } }
+        }
+      }
+    },
+    "/payments/{id}": {
+      "patch": {
+        "tags": ["Payments"],
+        "summary": "Aktualizuj płatność (np. oznacz jako opłacone)",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Payment" } } }
+        },
+        "responses": {
+          "200": { "description": "Zaktualizowano" },
+          "404": { "description": "Nie znaleziono płatności" }
+        }
+      }
+    },
+    "/payments/generate-monthly": {
+      "post": {
+        "tags": ["Payments"],
+        "summary": "Wygeneruj zbiorczo miesięczne opłaty",
+        "description": "Dla każdego studenta z przypisanym pokojem tworzy płatność na wskazany miesiąc i rok, w kwocie równej Rooms.PricePerMonth. Pomija studentów, którzy już mają rachunek za ten okres (idempotentne). Zwraca licznik utworzonych i pominiętych. Rozsyła 'payments:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["month", "year"],
+                "properties": {
+                  "month": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Numer miesiąca (1-12). Backend mapuje na polską nazwę." },
+                  "year": { "type": "integer", "example": 2026 },
+                  "dueDay": { "type": "integer", "default": 10, "description": "Dzień miesiąca jako termin płatności" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Wykonano",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "created": { "type": "integer" },
+                    "skipped": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Brak wymaganych pól month/year" }
+        }
+      }
+    },
+    "/issues": {
+      "post": {
+        "tags": ["Issues"],
+        "summary": "Utwórz zgłoszenie usterki",
+        "description": "Tworzy dokument w kolekcji MongoDB 'issues' z polami z body, dodaje createdAt i resolvedAt=null. Rozsyła 'issues:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } }
+        },
+        "responses": {
+          "200": { "description": "Utworzono", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }
+        }
+      }
+    },
+    "/issues/{id}": {
+      "patch": {
+        "tags": ["Issues"],
+        "summary": "Aktualizuj zgłoszenie",
+        "description": "Częściowa aktualizacja. Jeśli status zmienia się na 'resolved' lub 'closed' i resolvedAt jeszcze nie ustawione, backend ustawia je automatycznie na bieżący timestamp. Rozsyła 'issues:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } }
+        },
+        "responses": {
+          "200": { "description": "Zaktualizowano" },
+          "404": { "description": "Nie znaleziono zgłoszenia" }
+        }
+      }
+    },
+    "/issues/{id}/messages": {
+      "post": {
+        "tags": ["Issues"],
+        "summary": "Dodaj wiadomość w wątku zgłoszenia",
+        "description": "Tworzy dokument w kolekcji 'issue_messages'. Rozsyła 'issue-messages:new' (pojedyncza wiadomość, nie pełna lista).",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["senderId", "senderRole", "message"],
+                "properties": {
+                  "senderId": { "type": "string" },
+                  "senderName": { "type": "string" },
+                  "senderRole": { "type": "string", "enum": ["student", "admin"] },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Wiadomość zapisana", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueMessage" } } } },
+          "400": { "description": "Brakuje wymaganych pól" }
+        }
+      }
+    },
+    "/chat/conversations": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "Utwórz lub pobierz konwersację z danym studentem",
+        "description": "Idempotentne: jeśli konwersacja dla danego studentId już istnieje, zwraca istniejącą; jeśli nie — tworzy nową (id = 'conv_{studentId}'). Rozsyła 'conversations:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["studentId"],
+                "properties": {
+                  "studentId": { "type": "string" },
+                  "studentName": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Conversation" } } } },
+          "400": { "description": "Brak studentId" }
+        }
+      }
+    },
+    "/chat/messages": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "Wyślij wiadomość czatu",
+        "description": "Tworzy dokument w 'chat_messages', aktualizuje pola lastMessage / lastMessageTime / unreadCount w konwersacji. Rozsyła 'chat:new-message' oraz 'conversations:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["conversationId", "senderId", "senderRole", "message"],
+                "properties": {
+                  "conversationId": { "type": "string" },
+                  "senderId": { "type": "string" },
+                  "senderName": { "type": "string" },
+                  "senderRole": { "type": "string", "enum": ["student", "admin"] },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Wysłano", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatMessage" } } } },
+          "400": { "description": "Brakuje wymaganych pól" }
+        }
+      }
+    },
+    "/chat/conversations/{id}/read": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "Oznacz konwersację jako przeczytaną",
+        "description": "Ustawia read=true na wszystkich wiadomościach w konwersacji wysłanych przez kogoś innego niż userId, zeruje unreadCount w samej konwersacji. Rozsyła 'chat:read' oraz 'conversations:changed'.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["userId"],
+                "properties": {
+                  "userId": { "type": "string", "description": "Id użytkownika, który czyta wiadomości — pomocne aby nie oznaczyć jego własnych jako przeczytanych" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    }
+  }
+}
