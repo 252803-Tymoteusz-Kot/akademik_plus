@@ -24,24 +24,20 @@ export function ChatWidget() {
     getOrCreateConversation,
   } = useApp();
 
-  // Auto-scroll przy nowych wiadomościach
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatMessages, selectedConversationId]);
 
-  // Oznacz jako przeczytane przy otwarciu konwersacji
   useEffect(() => {
     if (selectedConversationId && user && isOpen) {
       markMessagesAsRead(selectedConversationId, user.id).catch(() => {
-        /* w razie błędu sieci po prostu spróbujemy następnym razem */
       });
     }
 
   }, [selectedConversationId, user, isOpen, chatMessages.length]);
 
-  // Studenci mają jedną konwersację - tworzymy/znajdujemy ją przy otwarciu czatu
   useEffect(() => {
     if (isOpen && user?.role === 'student' && !selectedConversationId) {
       getOrCreateConversation(user.id, user.name)
@@ -51,7 +47,6 @@ export function ChatWidget() {
           toast.error('Nie udało się połączyć z czatem');
         });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, user]);
 
   const handleSend = async () => {
@@ -81,7 +76,7 @@ export function ChatWidget() {
     } catch (err) {
       console.error('Wysłanie wiadomości nie powiodło się:', err);
       toast.error('Nie udało się wysłać wiadomości');
-      setMessage(text); // przywróć tekst, by użytkownik nie tracił treści
+      setMessage(text);
     } finally {
       setSending(false);
     }
@@ -99,8 +94,6 @@ export function ChatWidget() {
     if (user.role === 'admin') {
       return conversations.reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
     }
-    // dla studenta: liczymy nieprzeczytane wiadomości od admina,
-    // ale tylko gdy okno czatu jest zamknięte
     if (isOpen) return 0;
     return chatMessages.filter(
       (m) => m.senderRole === 'admin' && m.senderId !== user.id && !m.read,

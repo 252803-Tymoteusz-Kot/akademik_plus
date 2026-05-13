@@ -5,9 +5,6 @@
 //  Podział danych:
 //    SQL Server  -> Users, Rooms, Students, ResidenceHistory, Payments
 //    MongoDB     -> conversations, chat_messages, issues, issue_messages
-//
-//  REST API i eventy Socket.IO są niezmienione w stosunku do wersji JSON,
-//  dzięki czemu frontend działa bez modyfikacji.
 // ============================================================================
 
 import express from 'express';
@@ -69,7 +66,6 @@ async function connectMongo(retries = 30) {
       mongoClient = new MongoClient(MONGO_URL, { serverSelectionTimeoutMS: 3000 });
       await mongoClient.connect();
       mongoDb = mongoClient.db(MONGO_DB_NAME);
-      // upewnij się, że kolekcje istnieją
       const existing = (await mongoDb.listCollections().toArray()).map((c) => c.name);
       for (const name of ['conversations', 'chat_messages', 'issues', 'issue_messages']) {
         if (!existing.includes(name)) await mongoDb.createCollection(name);
@@ -164,7 +160,6 @@ function mapResidence(r) {
   };
 }
 
-// Mongo: konwertujemy _id <-> id, żeby format był identyczny jak w starym JSON.
 function fromMongo(doc) {
   if (!doc) return null;
   const { _id, ...rest } = doc;
@@ -318,7 +313,6 @@ app.post('/api/change-password', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Hasło musi mieć min. 6 znaków' });
     }
 
-    // sprawdź obecne hasło
     const result = await sqlPool.request()
       .input('Id', sql.NVarChar(50), req.user.id)
       .query('SELECT Password FROM Users WHERE Id = @Id');
@@ -328,7 +322,6 @@ app.post('/api/change-password', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Nieprawidłowe obecne hasło' });
     }
 
-    // zaktualizuj hasło
     await sqlPool.request()
       .input('Id', sql.NVarChar(50), req.user.id)
       .input('Password', sql.NVarChar(255), newPassword)
@@ -487,7 +480,6 @@ app.post('/api/students', async (req, res) => {
     const tx = new sql.Transaction(sqlPool);
     await tx.begin();
     try {
-      // Jeśli nie ma User-a o takim emailu, utwórz go z domyślnym hasłem 'student'
       const existing = await findUserByEmail(s.email);
       if (!existing) {
         await new sql.Request(tx)
@@ -560,7 +552,6 @@ app.patch('/api/students/:id', async (req, res) => {
   }
 });
 
-// Przypisanie do pokoju – w transakcji: aktualizacja Students, Rooms, ResidenceHistory.
 app.post('/api/students/:id/assign-room', async (req, res) => {
   try {
     const studentId = req.params.id;
@@ -747,14 +738,12 @@ app.post('/api/payments/generate-monthly', async (req, res) => {
     const day = Number(dueDay) || 10;
     const dueDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-    // mapowanie numeru miesiąca na polską nazwę (zgodnie z istniejącymi danymi)
     const monthNames = [
       '', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
       'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
     ];
     const monthName = monthNames[Number(month)] || String(month);
 
-    // pobierz wszystkich studentów z pokojem + cenę pokoju
     const result = await sqlPool.request().query(`
       SELECT s.Id AS StudentId, r.PricePerMonth
       FROM Students s
@@ -766,7 +755,6 @@ app.post('/api/payments/generate-monthly', async (req, res) => {
     let skipped = 0;
 
     for (const row of result.recordset) {
-      // sprawdź czy już istnieje rachunek za ten miesiąc dla tego studenta
       const existing = await sqlPool.request()
         .input('StudentId', sql.NVarChar(50), row.StudentId)
         .input('Month', sql.NVarChar(20), monthName)
@@ -927,7 +915,6 @@ app.post('/api/chat/messages', async (req, res) => {
     };
     await mongoDb.collection('chat_messages').insertOne(newMsg);
 
-    // aktualizacja konwersacji
     const conv = await mongoDb.collection('conversations').findOne({ _id: conversationId });
     if (conv) {
       const inc = senderRole === 'student' ? (conv.unreadCount || 0) + 1 : conv.unreadCount || 0;
@@ -1000,11 +987,9 @@ io.on('connection', (socket) => {
 // ---------------------------------------------------------------------------
 
 (async () => {
-  // 1) startujemy HTTP od razu, żeby healthcheck Dockera nie zabił kontenera
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[Akademik+] API + Socket.IO uruchomione na porcie ${PORT}`);
   });
-  // 2) potem podłączamy bazy w tle z retry
   try {
     await connectSql();
     await connectMongo();
