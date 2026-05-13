@@ -58,8 +58,7 @@ services:
       start_period: 40s
 
   # ---- MongoDB --------------------------------------------------------------
-  # Bez auth, żeby mongo-init.js z /docker-entrypoint-initdb.d/ uruchomił się
-  # automatycznie przy pierwszym starcie i utworzył kolekcje + seed.
+
   mongo-db:
     image: mongo:7
     ports:
@@ -101,10 +100,7 @@ services:
       - dorm-net
 
   # ---- Inicjalizator MSSQL --------------------------------------------------
-  # Obraz mssql nie obsługuje /docker-entrypoint-initdb.d/, więc tworzymy bazę
-  # AkademikDB i wszystkie tabele sami przy pierwszym starcie. Skrypt jest
-  # idempotentny — przy kolejnych restartach i tak nadpisuje schemę i seed
-  # zgodnie z zawartością init.sql (wygodne na czas developmentu).
+
   sql-init:
     image: mcr.microsoft.com/mssql-tools
     depends_on:
