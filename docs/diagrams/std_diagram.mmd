@@ -9,29 +9,39 @@ stateDiagram-v2
     %%    - status: 'open' | 'in-progress' | 'resolved' | 'closed'
     %%      (definicja w database/mongo-init.js, obsluga w
     %%       src/api/server.js -> PATCH /api/issues/:id)
-    %%    - dodatkowe stany ('Anulowane', 'Wstrzymane') reprezentuja
-    %%      sciezki obsluzone przez status + pole resolvedAt.
+    %%    - resolvedAt ustawiany automatycznie przy pierwszej zmianie
+    %%      na 'resolved' lub 'closed' (jesli jeszcze null)
+    %%    - Administrator moze zmienic status na dowolny inny
+    %%      (dropdown w admin/Issues.tsx nie filtruje opcji)
+    %%    - Backend (PATCH /api/issues/:id) nie waliduje dozwolonych przejsc
     %%
-    %%  Styl zgodny ze schematem ATM przedstawionym na wykladzie:
-    %%  punkt startowy, jednoznacznie nazwane przejscia, punkt koncowy.
     %% =========================================================================
 
-    [*] --> Utworzone : Student wysyla zgloszenie<br/>(POST /api/issues)
+    [*] --> Otwarte : Student wysyla zgloszenie<br/>(POST /api/issues, status = open)
 
-    Utworzone --> W_Realizacji : Administrator podejmuje zgloszenie<br/>(status = in-progress)
-    Utworzone --> Anulowane : Administrator odrzuca zgloszenie<br/>(duplikat lub blad)
+    %% --- Przejscia z Otwarte ---
+    Otwarte --> W_Realizacji : Administrator podejmuje zgloszenie<br/>(PATCH status = in-progress)
+    Otwarte --> Rozwiazane : Administrator oznacza jako rozwiazane<br/>(PATCH status = resolved, resolvedAt = now)
+    Otwarte --> Zamkniete : Administrator zamyka zgloszenie<br/>(PATCH status = closed, resolvedAt = now)
 
-    W_Realizacji --> Wstrzymane : Brak czesci lub serwisanta<br/>(czeka na zasoby)
-    Wstrzymane --> W_Realizacji : Dostarczenie zasobow<br/>(wznowienie pracy)
+    %% --- Przejscia z W_Realizacji ---
+    W_Realizacji --> Otwarte : Administrator cofa do otwarcia<br/>(PATCH status = open)
+    W_Realizacji --> Rozwiazane : Usterka usunieta<br/>(PATCH status = resolved, resolvedAt = now)
+    W_Realizacji --> Zamkniete : Administrator zamyka zgloszenie<br/>(PATCH status = closed, resolvedAt = now)
 
-    W_Realizacji --> Rozwiazane : Usterka usunieta<br/>(status = resolved, resolvedAt = now)
+    %% --- Przejscia z Rozwiazane ---
+    Rozwiazane --> Otwarte : Ponowne otwarcie zgloszenia<br/>(PATCH status = open)
+    Rozwiazane --> W_Realizacji : Wznowienie realizacji<br/>(PATCH status = in-progress)
+    Rozwiazane --> Zamkniete : Zamkniecie po rozwiazaniu<br/>(PATCH status = closed)
 
-    Rozwiazane --> W_Realizacji : Student odrzuca naprawe<br/>(ponowne otwarcie)
-    Rozwiazane --> Zamkniete : Student akceptuje naprawe<br/>(status = closed)
+    %% --- Przejscia z Zamkniete ---
+    Zamkniete --> Otwarte : Reaktywacja zgloszenia<br/>(PATCH status = open)
+    Zamkniete --> W_Realizacji : Wznowienie realizacji<br/>(PATCH status = in-progress)
+    Zamkniete --> Rozwiazane : Oznaczenie jako rozwiazane<br/>(PATCH status = resolved)
 
-    Zamkniete --> [*]
-    Anulowane --> [*]
+    %% Zamkniete nie prowadzi do [*] poniewaz moze byc reaktywowane.
+    %% Koniec cyklu nastepuje gdy zgloszenie pozostaje w stanie Zamkniete.
 
     %% Wymiana wiadomosci (POST /api/issues/:id/messages) moze zachodzic
-    %% w stanach Utworzone, W_Realizacji, Wstrzymane i Rozwiazane -
-    %% nie zmienia stanu glownego, dlatego nie ma osobnej tranzycji.
+    %% w dowolnym stanie - nie zmienia stanu glownego,
+    %% dlatego nie ma osobnej tranzycji.
